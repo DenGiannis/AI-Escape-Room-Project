@@ -17,3 +17,8 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+if not settings.OPENAI_API_KEY:
+    raise RuntimeError(
+        "OPENAI_API_KEY is not set. Create a .env file at the project root "
+    )
