@@ -41,6 +41,8 @@ ROOM_NAMES: dict[str, str] = {
 #   frontend/assets/rooms/library.<ext>             - shown while in that room
 #   frontend/assets/rooms/restricted_archives.<ext> - shown while in that room
 #   frontend/assets/rooms/awakening.<ext>           - the ending screen
+#   frontend/assets/athena_icon.<ext>               - chat avatar for the narrator
+#   frontend/assets/unit_icon.<ext>                 - chat avatar for the player
 
 ASSETS_DIR = Path(__file__).parent / "assets"
 ROOM_IMAGES_DIR = ASSETS_DIR / "rooms"
@@ -59,6 +61,19 @@ def _find_image(directory: Path, stem: str) -> Path | None:
 def _render(path: Path | None) -> None:
     if path:
         st.image(path.read_bytes(), use_container_width=True)
+
+
+# Chat avatars
+#   frontend/assets/athena_icon.<ext>  - the narrator (Athena)
+#   frontend/assets/unit_icon.<ext>    - the player (the Unit)
+def _avatar(stem: str, fallback: str | None) -> str | None:
+    """Return the local avatar image path if it exists, else the emoji fallback."""
+    path = _find_image(ASSETS_DIR, stem)
+    return str(path) if path else fallback
+
+
+ATHENA_AVATAR = _avatar("athena_icon", "🏛️")
+UNIT_AVATAR = _avatar("unit_icon", "👤")
 
 
 def show_room_image(room: str) -> None:
@@ -126,6 +141,22 @@ CSS = """
 
     /* Input box */
     .stChatInput textarea { background-color: #13131c !important; color: #c8b89a !important; }
+
+    .stChatInput [data-baseweb="textarea"]:focus-within,
+    .stChatInput [data-baseweb="base-input"]:focus-within,
+    .stTextInput [data-baseweb="input"]:focus-within,
+    .stTextInput [data-baseweb="base-input"]:focus-within {
+        border-color: #8a7a5a !important;
+        box-shadow: 0 0 0 1px #8a7a5a !important;
+    }
+
+    .stChatInput div:focus-within,
+    .stTextInput div:focus-within {
+        border-color: #8a7a5a !important;
+    }
+
+    .stChatInput textarea, .stTextInput input { caret-color: #c8b89a !important; }
+    .stTextInput input:focus { box-shadow: none !important; }
 </style>
 """
 
@@ -268,7 +299,7 @@ else:
     # ── Chat history ─────────────────────────────────────────────────────────
     for msg in st.session_state.messages:
         if msg["role"] == "player":
-            with st.chat_message("user"):
+            with st.chat_message("user", avatar=UNIT_AVATAR):
                 st.write(msg["content"])
         elif msg["role"] == "hint":
             with st.chat_message("assistant", avatar="💡"):
@@ -276,7 +307,7 @@ else:
         elif msg["role"] == "room_image":
             show_room_image(msg["content"])
         else:  # athena / system
-            with st.chat_message("assistant", avatar="🏛️"):
+            with st.chat_message("assistant", avatar=ATHENA_AVATAR):
                 st.write(msg["content"])
 
     # ── Input ─────────────────────────────────────────────────────────────────
