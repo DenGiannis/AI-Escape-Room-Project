@@ -4,6 +4,22 @@ from pathlib import Path
 
 API = "http://localhost:8000/api/v1"
 
+
+def _post_to_game_api(path: str, payload: dict, timeout: float) -> tuple[httpx.Response | None, str | None]:
+    """Make an API request without allowing network errors to escape into Streamlit."""
+    try:
+        return httpx.post(f"{API}{path}", json=payload, timeout=timeout), None
+    except httpx.ConnectError:
+        return None, (
+            "The game backend is currently unavailable. Start the backend and make sure all configurations "
+            "are correct."
+        )
+    except httpx.TimeoutException:
+        return None, "The game backend took too long to respond. Please try again."
+    except httpx.RequestError:
+        return None, "The game backend could not be reached. Please try again."
+
+
 ITEM_NAMES: dict[str, str] = {
     "seal_of_reason": "Seal of Reason (Torch)",
     "seal_of_judgement": "Seal of Judgement (Scales)",
@@ -148,27 +164,29 @@ if st.session_state.session_id is None:
         player_name = st.text_input("Enter your name, Seeker", placeholder="Your name")
         if st.button("Begin", use_container_width=True) and player_name.strip():
             with st.spinner("Initialising simulation..."):
-                resp = httpx.post(
-                    f"{API}/game/start",
-                    json={"player_name": player_name.strip()},
+                resp, request_error = _post_to_game_api(
+                    "/game/start", {"player_name": player_name.strip()}, timeout=30.0
                 )
-            if resp.status_code == 200:
-                data = resp.json()
-                st.session_state.session_id = data["session_id"]
-                st.session_state.player_name = data["player_name"]
-                st.session_state.current_room = data["current_room"]
-
-                st.session_state.messages.append({
-                    "role": "room_image",
-                    "content": data["current_room"],
-                })
-                st.session_state.messages.append({
-                    "role": "athena",
-                    "content": data["message"],
-                })
-                st.rerun()
+            if resp is None:
+                st.error(request_error or "The game backend could not be reached.")
             else:
-                st.error(f"Could not start game: {resp.text}")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    st.session_state.session_id = data["session_id"]
+                    st.session_state.player_name = data["player_name"]
+                    st.session_state.current_room = data["current_room"]
+
+                    st.session_state.messages.append({
+                        "role": "room_image",
+                        "content": data["current_room"],
+                    })
+                    st.session_state.messages.append({
+                        "role": "athena",
+                        "content": data["message"],
+                    })
+                    st.rerun()
+                else:
+                    st.error(f"Could not start game: {resp.text}")
 
 # AWAKENING SCREEN  (shown after game is won)
 
@@ -235,12 +253,12 @@ else:
         st.markdown("---")
         if st.button("💡 Request a hint", use_container_width=True):
             with st.spinner("Athena considers..."):
-                resp = httpx.post(
-                    f"{API}/game/hint",
-                    json={"session_id": session_id},
-                    timeout=30.0,
+                resp, request_error = _post_to_game_api(
+                    "/game/hint", {"session_id": session_id}, timeout=30.0
                 )
-            if resp.status_code == 200:
+            if resp is None:
+                st.warning(request_error or "The game backend could not be reached.")
+            elif resp.status_code == 200:
                 st.session_state.messages.append({
                     "role": "hint",
                     "content": resp.json()["hint"],
@@ -266,12 +284,15 @@ else:
     if player_input:
         st.session_state.messages.append({"role": "player", "content": player_input})
         with st.spinner("Athena speaks..."):
-            resp = httpx.post(
-                f"{API}/game/action",
-                json={"session_id": session_id, "input": player_input},
+            resp, request_error = _post_to_game_api(
+                "/game/action",
+                {"session_id": session_id, "input": player_input},
                 timeout=60.0,
             )
-        if resp.status_code == 200:
+        if resp is None:
+            message = request_error or "The game backend could not be reached."
+            st.session_state.messages.append({"role": "athena", "content": f"*{message}*"})
+        elif resp.status_code == 200:
             data = resp.json()
             st.session_state.messages.append({"role": "athena", "content": data["narration"]})
             if data["current_room"] != st.session_state.current_room and not data["is_escaped"]:
