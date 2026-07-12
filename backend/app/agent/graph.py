@@ -130,6 +130,26 @@ def _extract_text(content: Any) -> str:
     return str(content)
 
 
+# Graceful-degradation helpers
+
+async def _narrate_or_fallback(messages: list[BaseMessage], fallback: str) -> str:
+    """Invoke the narrator LLM, degrading to a plain fallback on any failure."""
+    try:
+        response = await _llm_narrator.ainvoke(messages)
+        return _extract_text(response.content)
+    except Exception:
+        return fallback
+
+
+def _safe_retrieve(query: str, source: str, k: int = 4) -> str:
+    """retrieve_filtered that returns '' instead of raising if the vector store or
+    embeddings call fails, so a RAG hiccup can't crash narration/hints."""
+    try:
+        return retrieve_filtered(query, source=source, k=k)
+    except Exception:
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # Memory helpers
 # ---------------------------------------------------------------------------
@@ -327,8 +347,8 @@ async def narrate_result(
         # Include last 6 exchanges (12 messages) for conversational context
         messages.extend(history[-12:])
     messages.append(HumanMessage(content=player_input))
-    response = await _llm_narrator.ainvoke(messages)
-    return _extract_text(response.content)
+
+    return await _narrate_or_fallback(messages, raw_result)
 
 
 # narrate_off_topic
@@ -342,7 +362,7 @@ async def narrate_off_topic(
     gently steering the player back to the puzzle at hand, without engaging with any
     rude or inappropriate content directly."""
     athena_prompt = _get_athena_prompt(room)
-    lore_snippet = retrieve_filtered(f"{room} atmosphere tone", source="world_lore.md", k=2)
+    lore_snippet = _safe_retrieve(f"{room} atmosphere tone", source="world_lore.md", k=2)
     system = (
         f"{athena_prompt}\n\n"
         "The player just said something that is not a valid game action — it may be "
@@ -357,8 +377,11 @@ async def narrate_off_topic(
     if history:
         messages.extend(history[-12:])
     messages.append(HumanMessage(content=player_input))
-    response = await _llm_narrator.ainvoke(messages)
-    return _extract_text(response.content)
+    return await _narrate_or_fallback(
+        messages,
+        "The Library holds its breath around you. Return your attention to this "
+        "room, Seeker, there is work here still undone.",
+    )
 
 
 # answer_player_question  (tool-calling agent)
@@ -398,30 +421,36 @@ async def answer_player_question(
         messages.extend(history[-12:])
     messages.append(HumanMessage(content=player_input))
 
-    ai = await _llm_agent.ainvoke(messages)
-
-    # Tool-calling loop: run any tool calls the model requests, feed results back,
-    # and re-invoke until it returns a plain answer (bounded to avoid loops).
-    for _ in range(_AGENT_MAX_TOOL_TURNS):
-        tool_calls = getattr(ai, "tool_calls", None)
-        if not tool_calls:
-            break
-        messages.append(ai)
-        for call in tool_calls:
-            tool = _AGENT_TOOLS_BY_NAME.get(call["name"])
-            if tool is None:
-                observation = f"Unknown tool: {call['name']}"
-            else:
-                try:
-                    observation = tool.invoke(call["args"])
-                except Exception as exc:  # never let a tool error 500 the request
-                    observation = f"Tool error: {exc}"
-            messages.append(
-                ToolMessage(content=str(observation), tool_call_id=call["id"])
-            )
+    try:
         ai = await _llm_agent.ainvoke(messages)
 
-    return _extract_text(ai.content)
+        # Tool-calling loop: run any tool calls the model requests, feed results back,
+        # and re-invoke until it returns a plain answer (bounded to avoid loops).
+        for _ in range(_AGENT_MAX_TOOL_TURNS):
+            tool_calls = getattr(ai, "tool_calls", None)
+            if not tool_calls:
+                break
+            messages.append(ai)
+            for call in tool_calls:
+                tool = _AGENT_TOOLS_BY_NAME.get(call["name"])
+                if tool is None:
+                    observation = f"Unknown tool: {call['name']}"
+                else:
+                    try:
+                        observation = tool.invoke(call["args"])
+                    except Exception as exc:  # never let a tool error 500 the request
+                        observation = f"Tool error: {exc}"
+                messages.append(
+                    ToolMessage(content=str(observation), tool_call_id=call["id"])
+                )
+            ai = await _llm_agent.ainvoke(messages)
+
+        return _extract_text(ai.content)
+    except Exception:
+        return (
+            "The Library's records blur before me for a moment. Ask again, Seeker, "
+            "and I will try once more to recall what you seek."
+        )
 
 
 # judge_truth_answer
@@ -436,12 +465,15 @@ async def judge_truth_answer(player_answer: str) -> bool:
         "Evasive, human-claiming, or nonsensical answers do not count.\n"
         "Reply with ONLY the word 'true' or 'false'."
     )
-    response = await _llm_parser.ainvoke([
-        SystemMessage(content=system),
-        HumanMessage(content=f"Player's answer: {player_answer}"),
-    ])
-    result = _extract_text(response.content).strip().lower()
-    return result.startswith("true")
+    try:
+        response = await _llm_parser.ainvoke([
+            SystemMessage(content=system),
+            HumanMessage(content=f"Player's answer: {player_answer}"),
+        ])
+        result = _extract_text(response.content).strip().lower()
+        return result.startswith("true")
+    except Exception:
+        return False
 
 
 # get_hint
@@ -529,7 +561,7 @@ async def get_hint(
         puzzle_id = None
 
     if puzzle_id:
-        knowledge = retrieve_filtered(f"{puzzle_id} hint progression", source="puzzles.md", k=4)
+        knowledge = _safe_retrieve(f"{puzzle_id} hint progression", source="puzzles.md", k=4)
         progress = _puzzle_progress(room, inventory, found_items)
         puzzle_context = (
             f"The player is working on puzzle '{puzzle_id}'. Below is the official hint "
@@ -544,7 +576,7 @@ async def get_hint(
             "asks, give the near-reveal level of detail). Never reveal steps beyond the next one."
         )
     else:
-        knowledge = retrieve_filtered(f"hints {room}", source="puzzles.md", k=2)
+        knowledge = _safe_retrieve(f"hints {room}", source="puzzles.md", k=2)
         puzzle_context = (
             "There is no open puzzle in this room right now (it may already be solved). "
             f"Respond briefly and in character, using this material if useful:\n\n{knowledge}"
@@ -560,6 +592,9 @@ async def get_hint(
         SystemMessage(content=system),
         HumanMessage(content="Give me a hint."),
     ]
-    response = await _llm_narrator.ainvoke(messages)
-    return _extract_text(response.content)
+    return await _narrate_or_fallback(
+        messages,
+        "Look carefully at everything in this room, Seeker, examine what you have "
+        "not yet touched, and consider what each object is asking of you.",
+    )
 
