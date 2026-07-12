@@ -16,7 +16,10 @@ class GameSession(SQLModel, table=True):
     hint_count: int = 0
     memory: str = Field(default="[]")          # Agent conversation history (JSON)
     created_at: datetime = Field(default_factory=datetime.now)
-    updated_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(
+        default_factory=datetime.now,
+        sa_column_kwargs={"onupdate": datetime.now},
+    )
 
     def get_inventory(self) -> list[str]:
         return json.loads(self.inventory)
