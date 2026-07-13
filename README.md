@@ -50,6 +50,8 @@ The UI opens at **http://localhost:8501** and talks to the backend on port 8000.
 
 ## Documentation
 
-See [DOCUMENTATION.md](DOCUMENTATION.md) for the full concept, GenAI techniques, tech stack,
-project structure, gameplay guide, API reference, testing, limitations, and the puzzle
-solution guide.
+- **[DOCUMENTATION.md](DOCUMENTATION.md)** — the full concept, GenAI techniques, tech stack,
+  project structure, gameplay guide, API reference, testing, limitations, and the puzzle
+  solution guide.
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — a plain-language walkthrough of how the code works:
+  what each file does, the life of one request, and how the agent, tools, and RAG fit together.
